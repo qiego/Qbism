@@ -1,1 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Qbism — Blind Cubist Drawing Party Game</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="cube-r">Q</span><span class="cube-g">B</span><span class="cube-b">I</span>SM
+      </div>
+      <div id="room-badge" class="room-badge hidden">
+        <span>CODE: <strong id="header-room-code">----</strong></span>
+      </div>
+    </header>
 
+    <!-- Toast Notifications -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- SCREEN 1: HOME (Create / Join) -->
+    <section id="screen-home" class="screen active">
+      <div class="hero-card">
+        <h1>Draw Blind.<br/>Think <span class="accent-text">Cubist</span>.</h1>
+        <p class="subtitle">
+          Draw 3 secret words without seeing your strokes. Your blind sketches are rotated, colored red/green/blue, and layered into a Cubist masterpiece for others to decode!
+        </p>
+
+        <div class="form-group">
+          <label for="player-name">Your Artist Name</label>
+          <input type="text" id="player-name" placeholder="e.g. Picasso" maxlength="18" autocomplete="off" />
+        </div>
+
+        <div class="home-actions">
+          <div class="action-box">
+            <h3>New Session</h3>
+            <div class="lang-toggle">
+              <button type="button" class="lang-btn active" data-lang="en">🇬🇧 English</button>
+              <button type="button" class="lang-btn" data-lang="it">🇮🇹 Italiano</button>
+            </div>
+            <button id="btn-create" class="btn btn-primary btn-block">Create Game Room</button>
+          </div>
+
+          <div class="divider"><span>OR JOIN ROOM</span></div>
+
+          <div class="action-box">
+            <div class="join-row">
+              <input type="text" id="join-code-input" placeholder="CODE" maxlength="5" autocomplete="off" />
+              <button id="btn-join" class="btn btn-secondary">Join</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCREEN 2: LOBBY -->
+    <section id="screen-lobby" class="screen">
+      <div class="card">
+        <div class="lobby-code-box">
+          <span class="small-label">ROOM CODE</span>
+          <div class="big-code" id="lobby-code">----</div>
+          <div id="hotspot-url-box" class="hotspot-box">
+            <span class="small-label">📶 FRIENDS ON HOTSPOT / WI-FI OPEN:</span>
+            <div id="hotspot-url-text" class="hotspot-url">http://...</div>
+          </div>
+          <div class="share-buttons">
+            <button id="btn-whatsapp" class="btn btn-whatsapp">📲 Share on WhatsApp</button>
+            <button id="btn-copy-link" class="btn btn-outline">🔗 Copy Link</button>
+          </div>
+        </div>
+
+        <div id="lobby-lang-control" class="lobby-lang hidden">
+          <span>Word Language:</span>
+          <button type="button" class="lang-switch-btn" data-lang="en">🇬🇧 EN</button>
+          <button type="button" class="lang-switch-btn" data-lang="it">🇮🇹 IT</button>
+        </div>
+
+        <div class="players-section">
+          <h3>Artists in Lobby (<span id="lobby-player-count">0</span>)</h3>
+          <ul id="lobby-player-list" class="player-chips"></ul>
+        </div>
+
+        <div id="host-start-area">
+          <button id="btn-start-game" class="btn btn-primary btn-block">Start Game (Min 2 Players)</button>
+        </div>
+        <p id="guest-wait-msg" class="wait-msg hidden">Waiting for the host to start the game...</p>
+      </div>
+    </section>
+
+    <!-- SCREEN 3: BLIND DRAWING PHASE (3 ROUNDS) -->
+    <section id="screen-drawing" class="screen">
+      <div class="phase-bar">
+        <div class="badge">ROUND <span id="draw-round-num">1</span> / 3</div>
+        <div class="penalty-pill">
+          ⚡ Finished so far: <strong id="finished-count-num">0</strong>
+          <span class="penalty-hint">(Current Penalty: -<span id="current-penalty-num">0</span> pt)</span>
+        </div>
+      </div>
+
+      <!-- Step 3A: Word Picker -->
+      <div id="word-picker-panel" class="card">
+        <h2>Pick 1 Word to Draw Blindly</h2>
+        <p class="hint">Choose from your remaining secret words for this round:</p>
+        <div id="my-words-list" class="word-buttons"></div>
+      </div>
+
+      <!-- Step 3B: Blind Square Frame -->
+      <div id="blind-canvas-panel" class="card hidden">
+        <div class="drawing-header">
+          <div>Drawing: <strong id="active-drawing-word" class="highlight-word">---</strong></div>
+          <button id="btn-clear-canvas" class="btn btn-small btn-outline">Reset Canvas</button>
+        </div>
+        <p class="blind-warning">👁️‍🗨️ Strokes are INVISIBLE! Only the square frame is visible.</p>
+
+        <div class="canvas-wrapper" id="draw-canvas-wrapper">
+          <canvas id="draw-canvas" width="500" height="500"></canvas>
+          <div id="touch-dot" class="touch-dot hidden"></div>
+        </div>
+
+        <button id="btn-done-drawing" class="btn btn-primary btn-block">✅ Done Drawing!</button>
+      </div>
+
+      <!-- Step 3C: Waiting for other players to finish round -->
+      <div id="draw-wait-panel" class="card hidden">
+        <h2>Drawing Submitted!</h2>
+        <p id="my-round-penalty-msg" class="penalty-result"></p>
+        <p class="wait-msg">Waiting for other artists to finish Round <span id="wait-round-num">1</span>...</p>
+        <ul id="draw-status-list" class="player-chips"></ul>
+      </div>
+    </section>
+
+    <!-- SCREEN 4: SCORING ROUND 1 & 2 (Cubist Painting + On-Screen Keyboard / Word Pool) -->
+    <section id="screen-scoring" class="screen">
+      <div class="phase-bar">
+        <div class="badge" id="scoring-phase-badge">SCORING ROUND 1</div>
+        <div class="score-pill" id="scoring-points-info">+2 pts per guess (to you & artist)</div>
+      </div>
+
+      <div class="scoring-layout">
+        <!-- Left/Top: Cubist Combined Canvas -->
+        <div class="card cubist-card">
+          <h3>Your Assigned Cubist Painting</h3>
+          <p class="hint">3 drawings rotated (0°/90°/180°/270°) & colored Red, Green, Blue</p>
+
+          <div class="canvas-wrapper cubist-wrapper">
+            <canvas id="cubist-canvas" width="500" height="500"></canvas>
+          </div>
+
+          <div class="layer-toggles">
+            <span class="small-label">Filter Layer:</span>
+            <button class="layer-btn active" data-layer="all">All 3</button>
+            <button class="layer-btn layer-r" data-layer="red">🔴 Red</button>
+            <button class="layer-btn layer-g" data-layer="green">🟢 Green</button>
+            <button class="layer-btn layer-b" data-layer="blue">🔵 Blue</button>
+          </div>
+
+          <!-- Status of the 3 layered drawings -->
+          <div id="cubist-slots" class="cubist-slots"></div>
+        </div>
+
+        <!-- Right/Bottom: Guessing Controls -->
+        <div class="card guessing-card">
+          <!-- Round 1: No help + On-screen Keyboard -->
+          <div id="scoring-r1-panel">
+            <h3>Guess the 3 Words (No Help!)</h3>
+            <p class="hint">Type a word using the on-screen keyboard and press GUESS.</p>
+
+            <div class="typed-display" id="r1-typed-box">
+              <span id="r1-typed-text"></span><span class="cursor">|</span>
+            </div>
+
+            <div id="onscreen-keyboard" class="keyboard"></div>
+
+            <div class="r1-actions">
+              <button id="btn-r1-finish" class="btn btn-outline btn-block">Done / Pass to Scoring Round 2 ➔</button>
+            </div>
+          </div>
+
+          <!-- Round 2: Word Bank Selection (5 * N words) -->
+          <div id="scoring-r2-panel" class="hidden">
+            <h3>Round 2: Pick from All Game Words</h3>
+            <p class="hint">
+              Select <strong id="r2-needed-count">0</strong> word(s) for the remaining unguessed drawings (+1 pt each):
+            </p>
+            <div id="r2-word-pool" class="word-pool-grid"></div>
+            <button id="btn-r2-submit" class="btn btn-primary btn-block">Confirm Round 2 Guesses</button>
+          </div>
+
+          <!-- Waiting for others to finish scoring -->
+          <div id="scoring-wait-panel" class="hidden">
+            <h3>Choices Locked In!</h3>
+            <p class="wait-msg">Waiting for other players to complete this scoring round...</p>
+            <ul id="scoring-status-list" class="player-chips"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCREEN 5: GAME OVER (Leaderboard + Cubist Gallery) -->
+    <section id="screen-gameover" class="screen">
+      <div class="card">
+        <h1 class="winner-banner" id="winner-banner">🏆 Winner!</h1>
+        <p class="subtitle">Final Scores (Guessing + Artist Points − Speed Penalties)</p>
+
+        <div class="table-wrap">
+          <table class="score-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Artist</th>
+                <th>Guessed</th>
+                <th>Drawn</th>
+                <th>Penalty</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-body"></tbody>
+          </table>
+        </div>
+
+        <div id="host-replay-area" class="replay-area hidden">
+          <button id="btn-play-again" class="btn btn-primary btn-block">🔄 Play Another Session</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🖼️ Cubist Exhibition Gallery</h2>
+        <p class="hint">Every combined artwork and the 3 secret words inside it:</p>
+        <div id="gallery-grid" class="gallery-grid"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Supports BOTH Local Hotspot Server (Socket.IO) AND Dual-Mode P2P -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
