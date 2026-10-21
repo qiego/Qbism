@@ -1,11 +1,17 @@
-const socket = io();
+const socket = io({
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 500,
+  reconnectionDelayMax: 3000
+});
 
-// Persistent player ID across reloads
-let myPlayerId = sessionStorage.getItem('qbism_player_id');
+// Persistent player ID across reloads and browser restarts
+let myPlayerId = localStorage.getItem('qbism_player_id') || sessionStorage.getItem('qbism_player_id');
 if (!myPlayerId) {
   myPlayerId = 'p_' + Math.random().toString(36).substring(2, 10);
-  sessionStorage.setItem('qbism_player_id', myPlayerId);
 }
+localStorage.setItem('qbism_player_id', myPlayerId);
+sessionStorage.setItem('qbism_player_id', myPlayerId);
 
 let selectedCreateLang = 'en';
 let currentRoomState = null;
@@ -49,6 +55,58 @@ function showScreen(name) {
   });
 }
 
+function getContextPayload(extra = {}) {
+  return {
+    code: currentRoomState?.code || localStorage.getItem('qbism_room_code') || '',
+    playerId: myPlayerId,
+    ...extra
+  };
+}
+
+// Auto-rejoin active room on page refresh or Socket.IO background reconnect (fixes Firefox for Android)
+function attemptAutoRejoin() {
+  const savedCode = localStorage.getItem('qbism_room_code');
+  const savedName = localStorage.getItem('qbism_player_name') || 'Artist';
+  if (!savedCode) return;
+
+  socket.emit(
+    'join_room',
+    { code: savedCode, playerName: savedName, playerId: myPlayerId, isAutoReconnect: true },
+    (res) => {
+      if (res?.ok) {
+        if (res.playerId && res.playerId !== myPlayerId) {
+          myPlayerId = res.playerId;
+          localStorage.setItem('qbism_player_id', myPlayerId);
+          sessionStorage.setItem('qbism_player_id', myPlayerId);
+        }
+        localStorage.setItem('qbism_room_code', res.code);
+      } else {
+        // Room no longer exists on server -> clear saved code and stay on Home screen
+        if (!currentRoomState) {
+          localStorage.removeItem('qbism_room_code');
+          roomBadge.classList.add('hidden');
+          showScreen('home');
+        }
+      }
+    }
+  );
+}
+
+socket.on('connect', () => {
+  attemptAutoRejoin();
+});
+
+// When Firefox for Android wakes up from background / screen lock, immediately resync
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    if (!socket.connected) {
+      socket.connect();
+    } else if (localStorage.getItem('qbism_room_code')) {
+      attemptAutoRejoin();
+    }
+  }
+});
+
 // Fetch Local Hotspot / Wi-Fi IP only when hosting on localhost; on Cloud/HTTPS use window.location.origin
 async function fetchNetworkInfo() {
   const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -88,6 +146,21 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   initBlindCanvas();
   initOnscreenKeyboard();
+
+  // Leave Room button in top badge
+  const leaveBtn = document.getElementById('btn-leave-room');
+  if (leaveBtn) {
+    leaveBtn.addEventListener('click', () => {
+      localStorage.removeItem('qbism_room_code');
+      currentRoomState = null;
+      currentRoundTracked = 0;
+      activeWord = null;
+      strokes = [];
+      roomBadge.classList.add('hidden');
+      showScreen('home');
+      showToast('Left room');
+    });
+  }
 });
 
 // Language selection on Home screen
@@ -106,6 +179,7 @@ document.getElementById('btn-create').addEventListener('click', () => {
   fetchNetworkInfo();
   socket.emit('create_room', { playerName, language: selectedCreateLang, playerId: myPlayerId }, (res) => {
     if (!res?.ok) return showToast(res?.error || 'Could not create room');
+    localStorage.setItem('qbism_room_code', res.code);
   });
 });
 
@@ -116,13 +190,19 @@ document.getElementById('btn-join').addEventListener('click', () => {
   localStorage.setItem('qbism_player_name', playerName);
   socket.emit('join_room', { code, playerName, playerId: myPlayerId }, (res) => {
     if (!res?.ok) return showToast(res?.error || 'Could not join room');
+    if (res.playerId && res.playerId !== myPlayerId) {
+      myPlayerId = res.playerId;
+      localStorage.setItem('qbism_player_id', myPlayerId);
+      sessionStorage.setItem('qbism_player_id', myPlayerId);
+    }
+    localStorage.setItem('qbism_room_code', res.code);
   });
 });
 
 // Lobby language switch
 document.querySelectorAll('.lang-switch-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    socket.emit('set_language', { language: btn.dataset.lang });
+    socket.emit('set_language', getContextPayload({ language: btn.dataset.lang }));
   });
 });
 
@@ -150,14 +230,14 @@ document.getElementById('btn-copy-link').addEventListener('click', async () => {
 
 // Start Game
 document.getElementById('btn-start-game').addEventListener('click', () => {
-  socket.emit('start_game', {}, (res) => {
+  socket.emit('start_game', getContextPayload(), (res) => {
     if (!res?.ok) showToast(res?.error || 'Cannot start game');
   });
 });
 
 // Play Again
 document.getElementById('btn-play-again').addEventListener('click', () => {
-  socket.emit('play_again');
+  socket.emit('play_again', getContextPayload());
 });
 
 // ==========================================
@@ -169,14 +249,16 @@ function initBlindCanvas() {
 
   function getNormalizedPos(evt) {
     const rect = canvas.getBoundingClientRect();
-    const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
-    const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+    const touch = (evt.touches && evt.touches[0]) || (evt.changedTouches && evt.changedTouches[0]);
+    const clientX = touch ? touch.clientX : evt.clientX;
+    const clientY = touch ? touch.clientY : evt.clientY;
     const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
     return { x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), px: clientX - rect.left, py: clientY - rect.top };
   }
 
   function startStroke(evt) {
+    if (evt.touches && evt.touches.length === 0) return;
     evt.preventDefault();
     isDrawing = true;
     const pos = getNormalizedPos(evt);
@@ -189,6 +271,7 @@ function initBlindCanvas() {
 
   function moveStroke(evt) {
     if (!isDrawing || !currentStroke) return;
+    if (evt.touches && evt.touches.length === 0) return;
     evt.preventDefault();
     const pos = getNormalizedPos(evt);
     currentStroke.push([pos.x, pos.y]);
@@ -211,6 +294,7 @@ function initBlindCanvas() {
   canvas.addEventListener('touchstart', startStroke, { passive: false });
   canvas.addEventListener('touchmove', moveStroke, { passive: false });
   window.addEventListener('touchend', endStroke);
+  window.addEventListener('touchcancel', endStroke);
 
   document.getElementById('btn-clear-canvas').addEventListener('click', () => {
     strokes = [];
@@ -223,7 +307,7 @@ function initBlindCanvas() {
     if (strokes.length === 0) {
       return showToast('Draw something inside the square frame first!');
     }
-    socket.emit('submit_drawing', { word: activeWord, strokes }, (res) => {
+    socket.emit('submit_drawing', getContextPayload({ word: activeWord, strokes }), (res) => {
       if (res?.ok) {
         const pen = res.penalty;
         document.getElementById('my-round-penalty-msg').textContent =
@@ -359,11 +443,11 @@ function initOnscreenKeyboard() {
   });
 
   document.getElementById('btn-r1-finish').addEventListener('click', () => {
-    socket.emit('finish_scoring_1');
+    socket.emit('finish_scoring_1', getContextPayload());
   });
 
   document.getElementById('btn-r2-submit').addEventListener('click', () => {
-    socket.emit('submit_scoring_2', { selectedWords: r2SelectedWords }, (res) => {
+    socket.emit('submit_scoring_2', getContextPayload({ selectedWords: r2SelectedWords }), (res) => {
       if (res?.ok) {
         showToast(`Round 2 complete! You got ${res.hits} right!`);
       }
@@ -380,9 +464,11 @@ function handleVirtualKey(key) {
     const guessText = r1Typed;
     r1Typed = '';
     document.getElementById('r1-typed-text').textContent = '';
-    socket.emit('submit_guess_r1', { guessText }, (res) => {
+    socket.emit('submit_guess_r1', getContextPayload({ guessText }), (res) => {
       if (res?.correct) {
         showToast(`🎉 Correct! "${res.matchedWord.toUpperCase()}" (+2 pts to you & artist!)`);
+      } else if (res?.error) {
+        showToast(res.error);
       } else {
         showToast(`❌ "${guessText}" is not one of the unguessed words. Try again!`);
       }
@@ -402,10 +488,22 @@ socket.on('room_state', (state) => {
   const prevState = currentRoomState?.state;
   currentRoomState = state;
 
+  if (state.code) {
+    localStorage.setItem('qbism_room_code', state.code);
+  }
+  if (state.me?.id && state.me.id !== myPlayerId) {
+    myPlayerId = state.me.id;
+    localStorage.setItem('qbism_player_id', myPlayerId);
+    sessionStorage.setItem('qbism_player_id', myPlayerId);
+  }
+
   roomBadge.classList.remove('hidden');
   headerRoomCode.textContent = state.code;
 
   if (state.state === 'LOBBY') {
+    currentRoundTracked = 0;
+    activeWord = null;
+    strokes = [];
     showScreen('lobby');
     renderLobby(state);
   } else if (state.state === 'DRAWING') {
@@ -460,6 +558,8 @@ function renderDrawingPhase(state) {
     activeWord = state.me?.selectedWord || null;
     strokes = [];
     currentStroke = null;
+  } else if (!activeWord && state.me?.selectedWord) {
+    activeWord = state.me.selectedWord;
   }
 
   document.getElementById('draw-round-num').textContent = state.currentRound;
@@ -510,7 +610,7 @@ function renderDrawingPhase(state) {
       btn.addEventListener('click', () => {
         activeWord = w;
         strokes = [];
-        socket.emit('select_word', { word: w });
+        socket.emit('select_word', getContextPayload({ word: w }));
         renderDrawingPhase(currentRoomState);
       });
       wordsContainer.appendChild(btn);
