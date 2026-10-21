@@ -49,8 +49,17 @@ function showScreen(name) {
   });
 }
 
-// Fetch Local Hotspot / Wi-Fi IP from the server so the Host phone can display the exact URL for friends
+// Fetch Local Hotspot / Wi-Fi IP only when hosting on localhost; on Cloud/HTTPS use window.location.origin
 async function fetchNetworkInfo() {
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const hotspotBox = document.getElementById('hotspot-url-box');
+
+  if (!isLocalhost) {
+    detectedHotspotUrl = window.location.origin;
+    if (hotspotBox) hotspotBox.classList.add('hidden');
+    return;
+  }
+
   try {
     const res = await fetch('/api/network');
     const data = await res.json();
@@ -117,11 +126,14 @@ document.querySelectorAll('.lang-switch-btn').forEach(btn => {
   });
 });
 
-// WhatsApp & Invite Link Sharing (Uses the Hotspot IP so friends on the Hotspot can tap it!)
+// WhatsApp & Invite Link Sharing (Works for both Cloud Hosting and Local Hotspot!)
 document.getElementById('btn-whatsapp').addEventListener('click', () => {
   if (!currentRoomState) return;
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   const inviteUrl = `${detectedHotspotUrl}/?room=${currentRoomState.code}`;
-  const text = `🎨 Connect to my Wi-Fi Hotspot and open:\n${inviteUrl}\n(Room Code: *${currentRoomState.code}*)`;
+  const text = isLocalhost
+    ? `🎨 Connect to my Wi-Fi Hotspot and open:\n${inviteUrl}\n(Room Code: *${currentRoomState.code}*)`
+    : `🎨 Join my Qbism game! Code: *${currentRoomState.code}*\nPlay here: ${inviteUrl}`;
   window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
 });
 
