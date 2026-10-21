@@ -7,7 +7,11 @@ const WORDS = require('./words');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  pingTimeout: 60000,
+  pingInterval: 20000,
+  connectionStateRecovery: {}
+});
 
 // Detect all local Wi-Fi / Hotspot IPv4 addresses on this device (Android or PC)
 function getLocalIPs() {
@@ -203,6 +207,22 @@ function broadcastRoom(room) {
   }
 }
 
+function resolveContext(socket, payload = {}) {
+  const code = socket.data.roomCode || (payload.code || '').toString().trim().toUpperCase();
+  const pid = socket.data.playerId || payload.playerId;
+  const room = rooms.get(code);
+  if (!room) return { room: null, player: null };
+  const player = room.players.find(p => p.id === pid);
+  if (player) {
+    socket.data.roomCode = code;
+    socket.data.playerId = player.id;
+    player.socketId = socket.id;
+    player.connected = true;
+    socket.join(code);
+  }
+  return { room, player };
+}
+
 io.on('connection', (socket) => {
   socket.on('create_room', ({ playerName, language, playerId }, cb) => {
     const name = (playerName || 'Artist').trim().substring(0, 18) || 'Artist';
@@ -246,10 +266,10 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('join_room', ({ code, playerName, playerId }, cb) => {
+  socket.on('join_room', ({ code, playerName, playerId, isAutoReconnect }, cb) => {
     let cleanCode = (code || '').trim().toUpperCase();
     // On a local Wi-Fi Hotspot, if only 1 room exists and the player didn't type a code, auto-join it!
-    if (!cleanCode && rooms.size === 1) {
+    if (!cleanCode && !isAutoReconnect && rooms.size === 1) {
       cleanCode = Array.from(rooms.keys())[0];
     }
 
@@ -261,10 +281,17 @@ io.on('connection', (socket) => {
     const name = (playerName || 'Artist').trim().substring(0, 18) || 'Artist';
     let player = room.players.find(p => p.id === playerId);
 
+    // Fallback: if player refreshed with cleared storage or new tab, match by name if disconnected or game in progress
+    if (!player && playerName) {
+      player = room.players.find(
+        p => p.name.toLowerCase() === name.toLowerCase() && (!p.connected || room.state !== 'LOBBY')
+      );
+    }
+
     if (player) {
       player.socketId = socket.id;
       player.connected = true;
-      if (playerName) player.name = name;
+      if (playerName && room.state === 'LOBBY') player.name = name;
     } else {
       if (room.state !== 'LOBBY') {
         return cb?.({ ok: false, error: 'Game already in progress!' });
@@ -294,17 +321,17 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('set_language', ({ language }) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.data.playerId || room.state !== 'LOBBY') return;
-    room.language = language === 'it' ? 'it' : 'en';
+  socket.on('set_language', (payload = {}) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || !player || room.hostId !== player.id || room.state !== 'LOBBY') return;
+    room.language = payload.language === 'it' ? 'it' : 'en';
     broadcastRoom(room);
   });
 
-  socket.on('start_game', (_, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room) return;
-    if (room.hostId !== socket.data.playerId) {
+  socket.on('start_game', (payload = {}, cb) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || !player) return cb?.({ ok: false, error: 'Session disconnected. Refreshing...' });
+    if (room.hostId !== player.id) {
       return cb?.({ ok: false, error: 'Only the host can start the game.' });
     }
     if (room.players.length < 2) {
@@ -339,23 +366,23 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('select_word', ({ word }) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.state !== 'DRAWING') return;
-    const player = room.players.find(p => p.id === socket.data.playerId);
-    if (!player) return;
+  socket.on('select_word', (payload = {}) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || room.state !== 'DRAWING' || !player) return;
+    const { word } = payload;
     if (player.words.includes(word) && !player.usedWords.includes(word)) {
       player.currentWord = word;
       broadcastRoom(room);
     }
   });
 
-  socket.on('submit_drawing', ({ word, strokes }, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.state !== 'DRAWING') return;
-    const player = room.players.find(p => p.id === socket.data.playerId);
-    if (!player) return;
+  socket.on('submit_drawing', (payload = {}, cb) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || room.state !== 'DRAWING' || !player) {
+      return cb?.({ ok: false, error: 'Reconnecting to room, please tap Done again!' });
+    }
 
+    const { word, strokes } = payload;
     const chosenWord = word || player.currentWord;
     if (!chosenWord || !player.words.includes(chosenWord) || player.usedWords.includes(chosenWord)) {
       return cb?.({ ok: false, error: 'Please select a valid unused word!' });
@@ -364,7 +391,10 @@ io.on('connection', (socket) => {
     const alreadySubmitted = room.drawings.some(
       d => d.round === room.currentRound && d.authorId === player.id
     );
-    if (alreadySubmitted) return;
+    if (alreadySubmitted) {
+      broadcastRoom(room);
+      return cb?.({ ok: true, penalty: player.roundPenalties[room.currentRound - 1] || 0 });
+    }
 
     const finishList = room.roundFinishOrder[room.currentRound];
     const penalty = finishList.length;
@@ -405,14 +435,14 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('submit_guess_r1', ({ guessText }, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.state !== 'SCORING_1') return;
-    const player = room.players.find(p => p.id === socket.data.playerId);
-    if (!player) return;
+  socket.on('submit_guess_r1', (payload = {}, cb) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || room.state !== 'SCORING_1' || !player) {
+      return cb?.({ ok: false, error: 'Reconnecting, please try again!' });
+    }
 
     const assigned = room.assignments[player.id] || [];
-    const normalizedGuess = normalizeWord(guessText);
+    const normalizedGuess = normalizeWord(payload.guessText);
     if (!normalizedGuess) return;
 
     const match = assigned.find(
@@ -438,23 +468,21 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('finish_scoring_1', () => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.state !== 'SCORING_1') return;
-    room.scoring1Done[socket.data.playerId] = true;
+  socket.on('finish_scoring_1', (payload = {}) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || room.state !== 'SCORING_1' || !player) return;
+    room.scoring1Done[player.id] = true;
     checkScoring1Advance(room);
     broadcastRoom(room);
   });
 
-  socket.on('submit_scoring_2', ({ selectedWords }, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.state !== 'SCORING_2') return;
-    const player = room.players.find(p => p.id === socket.data.playerId);
-    if (!player || room.scoring2Done[player.id]) return;
+  socket.on('submit_scoring_2', (payload = {}, cb) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || room.state !== 'SCORING_2' || !player || room.scoring2Done[player.id]) return;
 
     const assigned = room.assignments[player.id] || [];
     const remaining = assigned.filter(d => !d.guessedRound1 && !d.guessedRound2);
-    const picks = (Array.isArray(selectedWords) ? selectedWords : []).slice(0, remaining.length);
+    const picks = (Array.isArray(payload.selectedWords) ? payload.selectedWords : []).slice(0, remaining.length);
 
     let hits = 0;
     picks.forEach(pickedWord => {
@@ -481,9 +509,9 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('play_again', () => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.data.playerId) return;
+  socket.on('play_again', (payload = {}) => {
+    const { room, player } = resolveContext(socket, payload);
+    if (!room || !player || room.hostId !== player.id) return;
     room.state = 'LOBBY';
     room.currentRound = 1;
     room.drawings = [];
@@ -498,7 +526,8 @@ io.on('connection', (socket) => {
     if (!code || !rooms.has(code)) return;
     const room = rooms.get(code);
     const player = room.players.find(p => p.id === socket.data.playerId);
-    if (player) {
+    // Only mark disconnected if this socket is still the active socket for that player
+    if (player && player.socketId === socket.id) {
       player.connected = false;
       broadcastRoom(room);
     }
