@@ -13,7 +13,6 @@ const io = new Server(server, {
   connectionStateRecovery: {}
 });
 
-// Detect all local Wi-Fi / Hotspot IPv4 addresses on this device (Android or PC)
 function getLocalIPs() {
   const interfaces = os.networkInterfaces();
   const ips = [];
@@ -32,7 +31,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/network', (req, res) => {
   const port = process.env.PORT || 3000;
   const ips = getLocalIPs();
-  // Prefer Android hotspot subnet (192.168.43.x or 192.168.x.x)
   const primaryIp = ips.find(i => i.address.startsWith('192.168.43.'))?.address
     || ips.find(i => i.address.startsWith('192.168.'))?.address
     || ips[0]?.address
@@ -76,8 +74,19 @@ function normalizeWord(w) {
   return (w || '').toString().trim().toLowerCase().replace(/[^a-z0-9àèéìòù]/g, '');
 }
 
+function getWordPool(language, difficulty) {
+  const langObj = WORDS[language] || WORDS.en;
+  if (difficulty === 'advanced') {
+    return [...langObj.advanced];
+  } else if (difficulty === 'mixed') {
+    return Array.from(new Set([...langObj.normal, ...langObj.advanced]));
+  }
+  return [...langObj.normal];
+}
+
 /**
- * Assigns 3 drawings per player such that no player receives any of their own 3 drawings.
+ * Strictly assigns 3 drawings per player (1 from each round) such that
+ * NO player EVER receives any of their own drawings (100% mathematical derangement).
  */
 function assignDrawingsDerangement(drawings, playerIds) {
   const N = playerIds.length;
@@ -87,28 +96,56 @@ function assignDrawingsDerangement(drawings, playerIds) {
   const colors = ['red', 'green', 'blue'];
   const rotations = [0, 90, 180, 270];
 
-  for (let r = 1; r <= 3; r++) {
-    const roundDrawings = drawings.filter(d => d.round === r);
-    let indices = playerIds.map((_, idx) => idx);
-    let attempts = 0;
-    while (attempts < 200) {
-      indices = shuffle(indices);
-      const valid = indices.every((targetIdx, idx) => playerIds[targetIdx] !== roundDrawings[idx]?.authorId);
-      if (valid) break;
-      attempts++;
-    }
-    if (!indices.every((targetIdx, idx) => playerIds[targetIdx] !== roundDrawings[idx]?.authorId)) {
-      roundDrawings.sort((a, b) => playerIds.indexOf(a.authorId) - playerIds.indexOf(b.authorId));
-      indices = playerIds.map((_, idx) => (idx + 1) % N);
-    }
+  // Create a shuffled ring of playerIds
+  const ring = shuffle(playerIds);
 
-    roundDrawings.forEach((drawing, idx) => {
-      const recipientId = playerIds[indices[idx]];
-      assignments[recipientId].push(drawing);
-    });
+  // Pick non-zero cyclic shifts (1 .. N-1) for the 3 rounds so ring[i]'s drawing goes to ring[(i + shift) % N].
+  // Because shift is between 1 and N-1, (i + shift) % N can NEVER equal i!
+  const possibleShifts = [];
+  for (let s = 1; s < N; s++) possibleShifts.push(s);
+
+  const roundShifts = [];
+  for (let r = 0; r < 3; r++) {
+    const shuffledShifts = shuffle(possibleShifts);
+    roundShifts.push(shuffledShifts[r % shuffledShifts.length] || 1);
   }
 
+  for (let r = 1; r <= 3; r++) {
+    const shift = roundShifts[r - 1];
+    const roundDrawings = [...drawings.filter(d => d.round === r)];
+
+    // Map each author in the ring to their drawing in round r
+    for (let i = 0; i < N; i++) {
+      const authorId = ring[i];
+      const recipientId = ring[(i + shift) % N];
+      const drawing = roundDrawings.find(d => d.authorId === authorId);
+      if (drawing) {
+        drawing.assignedTo = recipientId;
+        assignments[recipientId].push(drawing);
+      }
+    }
+  }
+
+  // Final safety verification: guarantee no drawing is ever assigned to its own author
   for (const pid of playerIds) {
+    for (let idx = 0; idx < assignments[pid].length; idx++) {
+      const d = assignments[pid][idx];
+      if (d.authorId === pid) {
+        // Swap with another player's drawing from the same round
+        const otherPid = playerIds.find(
+          op => op !== pid && assignments[op][idx] && assignments[op][idx].authorId !== pid
+        );
+        if (otherPid) {
+          const temp = assignments[otherPid][idx];
+          d.assignedTo = otherPid;
+          temp.assignedTo = pid;
+          assignments[otherPid][idx] = d;
+          assignments[pid][idx] = temp;
+        }
+      }
+    }
+
+    // Assign random rotation (0, 90, 180, 270) and distinct colors (red, green, blue)
     const playerColors = shuffle(colors);
     assignments[pid] = shuffle(assignments[pid]).map((d, idx) => {
       d.assignedTo = pid;
@@ -131,6 +168,7 @@ function getPublicRoomState(room, forPlayerId) {
     totalPenalty: p.totalPenalty,
     guessPoints: p.guessPoints,
     artistPoints: p.artistPoints,
+    totalDrawTimeSec: Number((p.totalDrawTimeSec || 0).toFixed(1)),
     totalScore: p.guessPoints + p.artistPoints - p.totalPenalty,
     hasFinishedRoundDrawing: room.state === 'DRAWING'
       ? room.drawings.some(d => d.round === room.currentRound && d.authorId === p.id)
@@ -150,37 +188,63 @@ function getPublicRoomState(room, forPlayerId) {
       authorName: room.players.find(p => p.id === d.authorId)?.name || 'Unknown',
       strokes: d.strokes,
       rotation: d.rotation,
-      color: d.color,
+      // In hardcore mode during scoring, hide individual RGB colors so all 3 are drawn in monochrome
+      color: (room.hardcore && room.state !== 'GAME_OVER') ? 'mono' : d.color,
       guessedRound1: d.guessedRound1,
       guessedRound2: d.guessedRound2,
       guessedBy: d.guessedBy,
+      durationSec: d.durationSec,
       word: (d.guessedRound1 || d.guessedRound2 || room.state === 'GAME_OVER') ? d.word : null,
       wordLength: d.word.length
     }));
   }
 
   let gallery = null;
+  let allDrawingsSummary = null;
   if (room.state === 'GAME_OVER') {
     gallery = room.players.map(p => ({
       playerId: p.id,
       playerName: p.name,
       drawings: (room.assignments[p.id] || []).map(d => ({
         id: d.id,
+        round: d.round,
         authorId: d.authorId,
         authorName: room.players.find(pl => pl.id === d.authorId)?.name || 'Unknown',
         word: d.word,
         strokes: d.strokes,
         rotation: d.rotation,
         color: d.color,
+        durationSec: d.durationSec,
+        penalty: d.penalty,
         guessedRound1: d.guessedRound1,
         guessedRound2: d.guessedRound2
       }))
     }));
+
+    allDrawingsSummary = room.drawings.map(d => ({
+      id: d.id,
+      round: d.round,
+      word: d.word,
+      authorId: d.authorId,
+      authorName: room.players.find(pl => pl.id === d.authorId)?.name || 'Unknown',
+      assignedToId: d.assignedTo,
+      assignedToName: room.players.find(pl => pl.id === d.assignedTo)?.name || 'Unknown',
+      durationSec: d.durationSec,
+      penalty: d.penalty,
+      rotation: d.rotation,
+      color: d.color,
+      guessedRound1: d.guessedRound1,
+      guessedRound2: d.guessedRound2
+    }));
   }
+
+  const myR1Attempts = me ? (room.scoring1Attempts[me.id] || []) : [];
 
   return {
     code: room.code,
     language: room.language,
+    difficulty: room.difficulty || 'normal',
+    hardcore: !!room.hardcore,
     state: room.state,
     currentRound: room.currentRound,
     totalRounds: 3,
@@ -190,12 +254,15 @@ function getPublicRoomState(room, forPlayerId) {
       name: me.name,
       words: me.words,
       usedWords: me.usedWords,
-      selectedWord: me.currentWord
+      selectedWord: me.currentWord,
+      r1Attempts: myR1Attempts,
+      r1AttemptsLeft: Math.max(0, 3 - myR1Attempts.length)
     } : null,
     roundFinishOrder: room.roundFinishOrder[room.currentRound] || [],
     myAssignedPainting,
     allGameWords: room.state === 'SCORING_2' || room.state === 'GAME_OVER' ? room.allAssignedWords : [],
-    gallery
+    gallery,
+    allDrawingsSummary
   };
 }
 
@@ -224,18 +291,22 @@ function resolveContext(socket, payload = {}) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('create_room', ({ playerName, language, playerId }, cb) => {
+  socket.on('create_room', ({ playerName, language, difficulty, hardcore, playerId }, cb) => {
     const name = (playerName || 'Artist').trim().substring(0, 18) || 'Artist';
     const lang = language === 'it' ? 'it' : 'en';
+    const diff = ['normal', 'advanced', 'mixed'].includes(difficulty) ? difficulty : 'normal';
     const code = generateRoomCode();
     const pid = playerId || generateId();
 
     const room = {
       code,
       language: lang,
+      difficulty: diff,
+      hardcore: !!hardcore,
       hostId: pid,
       state: 'LOBBY',
       currentRound: 1,
+      roundStartTimes: { 1: 0, 2: 0, 3: 0 },
       players: [{
         id: pid,
         name,
@@ -244,8 +315,10 @@ io.on('connection', (socket) => {
         words: [],
         usedWords: [],
         currentWord: null,
+        wordSelectedAt: 0,
         roundPenalties: [0, 0, 0],
         totalPenalty: 0,
+        totalDrawTimeSec: 0,
         guessPoints: 0,
         artistPoints: 0
       }],
@@ -253,6 +326,7 @@ io.on('connection', (socket) => {
       roundFinishOrder: { 1: [], 2: [], 3: [] },
       assignments: {},
       allAssignedWords: [],
+      scoring1Attempts: {},
       scoring1Done: {},
       scoring2Done: {}
     };
@@ -268,7 +342,6 @@ io.on('connection', (socket) => {
 
   socket.on('join_room', ({ code, playerName, playerId, isAutoReconnect }, cb) => {
     let cleanCode = (code || '').trim().toUpperCase();
-    // On a local Wi-Fi Hotspot, if only 1 room exists and the player didn't type a code, auto-join it!
     if (!cleanCode && !isAutoReconnect && rooms.size === 1) {
       cleanCode = Array.from(rooms.keys())[0];
     }
@@ -281,7 +354,6 @@ io.on('connection', (socket) => {
     const name = (playerName || 'Artist').trim().substring(0, 18) || 'Artist';
     let player = room.players.find(p => p.id === playerId);
 
-    // Fallback: if player refreshed with cleared storage or new tab, match by name if disconnected or game in progress
     if (!player && playerName) {
       player = room.players.find(
         p => p.name.toLowerCase() === name.toLowerCase() && (!p.connected || room.state !== 'LOBBY')
@@ -305,8 +377,10 @@ io.on('connection', (socket) => {
         words: [],
         usedWords: [],
         currentWord: null,
+        wordSelectedAt: 0,
         roundPenalties: [0, 0, 0],
         totalPenalty: 0,
+        totalDrawTimeSec: 0,
         guessPoints: 0,
         artistPoints: 0
       };
@@ -321,10 +395,16 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('set_language', (payload = {}) => {
+  socket.on('set_options', (payload = {}) => {
     const { room, player } = resolveContext(socket, payload);
     if (!room || !player || room.hostId !== player.id || room.state !== 'LOBBY') return;
-    room.language = payload.language === 'it' ? 'it' : 'en';
+    if (payload.language) room.language = payload.language === 'it' ? 'it' : 'en';
+    if (payload.difficulty && ['normal', 'advanced', 'mixed'].includes(payload.difficulty)) {
+      room.difficulty = payload.difficulty;
+    }
+    if (typeof payload.hardcore === 'boolean') {
+      room.hardcore = payload.hardcore;
+    }
     broadcastRoom(room);
   });
 
@@ -338,16 +418,19 @@ io.on('connection', (socket) => {
       return cb?.({ ok: false, error: 'Need at least 2 players to start Qbism!' });
     }
 
-    const pool = shuffle(WORDS[room.language] || WORDS.en);
+    const pool = shuffle(getWordPool(room.language, room.difficulty));
     const allWords = [];
+    const now = Date.now();
 
     room.players.forEach((p, idx) => {
       const fiveWords = pool.slice(idx * 5, idx * 5 + 5);
       p.words = fiveWords;
       p.usedWords = [];
       p.currentWord = null;
+      p.wordSelectedAt = now;
       p.roundPenalties = [0, 0, 0];
       p.totalPenalty = 0;
+      p.totalDrawTimeSec = 0;
       p.guessPoints = 0;
       p.artistPoints = 0;
       allWords.push(...fiveWords);
@@ -356,7 +439,9 @@ io.on('connection', (socket) => {
     room.allAssignedWords = shuffle(allWords);
     room.drawings = [];
     room.roundFinishOrder = { 1: [], 2: [], 3: [] };
+    room.roundStartTimes = { 1: now, 2: 0, 3: 0 };
     room.assignments = {};
+    room.scoring1Attempts = {};
     room.scoring1Done = {};
     room.scoring2Done = {};
     room.currentRound = 1;
@@ -372,6 +457,7 @@ io.on('connection', (socket) => {
     const { word } = payload;
     if (player.words.includes(word) && !player.usedWords.includes(word)) {
       player.currentWord = word;
+      player.wordSelectedAt = Date.now();
       broadcastRoom(room);
     }
   });
@@ -382,7 +468,7 @@ io.on('connection', (socket) => {
       return cb?.({ ok: false, error: 'Reconnecting to room, please tap Done again!' });
     }
 
-    const { word, strokes } = payload;
+    const { word, strokes, durationSec: clientDuration } = payload;
     const chosenWord = word || player.currentWord;
     if (!chosenWord || !player.words.includes(chosenWord) || player.usedWords.includes(chosenWord)) {
       return cb?.({ ok: false, error: 'Please select a valid unused word!' });
@@ -396,14 +482,24 @@ io.on('connection', (socket) => {
       return cb?.({ ok: true, penalty: player.roundPenalties[room.currentRound - 1] || 0 });
     }
 
+    const now = Date.now();
+    const startRef = player.wordSelectedAt || room.roundStartTimes[room.currentRound] || now;
+    const serverElapsed = (now - startRef) / 1000;
+    const rawDuration = (typeof clientDuration === 'number' && clientDuration > 0)
+      ? clientDuration
+      : serverElapsed;
+    const durationSec = Number(Math.max(0.5, Math.min(600, rawDuration)).toFixed(1));
+
     const finishList = room.roundFinishOrder[room.currentRound];
     const penalty = finishList.length;
-    finishList.push({ playerId: player.id, playerName: player.name, penalty });
+    finishList.push({ playerId: player.id, playerName: player.name, penalty, durationSec });
 
     player.roundPenalties[room.currentRound - 1] = penalty;
     player.totalPenalty += penalty;
+    player.totalDrawTimeSec = Number(((player.totalDrawTimeSec || 0) + durationSec).toFixed(1));
     player.usedWords.push(chosenWord);
     player.currentWord = null;
+    player.wordSelectedAt = 0;
 
     room.drawings.push({
       id: generateId(),
@@ -411,6 +507,8 @@ io.on('connection', (socket) => {
       authorId: player.id,
       word: chosenWord,
       strokes: Array.isArray(strokes) ? strokes : [],
+      durationSec,
+      penalty,
       rotation: 0,
       color: 'red',
       assignedTo: null,
@@ -419,12 +517,14 @@ io.on('connection', (socket) => {
       guessedBy: null
     });
 
-    cb?.({ ok: true, penalty });
+    cb?.({ ok: true, penalty, durationSec });
 
     const finishedCount = room.drawings.filter(d => d.round === room.currentRound).length;
     if (finishedCount >= room.players.length) {
       if (room.currentRound < 3) {
         room.currentRound += 1;
+        room.roundStartTimes[room.currentRound] = Date.now();
+        room.players.forEach(p => { p.wordSelectedAt = Date.now(); });
       } else {
         const playerIds = room.players.map(p => p.id);
         room.assignments = assignDrawingsDerangement(room.drawings, playerIds);
@@ -435,37 +535,69 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
+  // Round 1 Scoring: Max 3 guesses per player (1 per drawing)
   socket.on('submit_guess_r1', (payload = {}, cb) => {
     const { room, player } = resolveContext(socket, payload);
     if (!room || room.state !== 'SCORING_1' || !player) {
       return cb?.({ ok: false, error: 'Reconnecting, please try again!' });
     }
+    if (room.scoring1Done[player.id]) {
+      return cb?.({ ok: false, error: 'You have already finished Round 1!' });
+    }
 
-    const assigned = room.assignments[player.id] || [];
-    const normalizedGuess = normalizeWord(payload.guessText);
+    if (!room.scoring1Attempts[player.id]) {
+      room.scoring1Attempts[player.id] = [];
+    }
+    const attempts = room.scoring1Attempts[player.id];
+    if (attempts.length >= 3) {
+      room.scoring1Done[player.id] = true;
+      checkScoring1Advance(room);
+      broadcastRoom(room);
+      return cb?.({ ok: false, error: 'All 3 guesses used!' });
+    }
+
+    const rawText = (payload.guessText || '').toString().trim();
+    const normalizedGuess = normalizeWord(rawText);
     if (!normalizedGuess) return;
 
+    const assigned = room.assignments[player.id] || [];
     const match = assigned.find(
       d => !d.guessedRound1 && normalizeWord(d.word) === normalizedGuess
     );
 
+    let isCorrect = false;
+    let matchedWord = null;
+
     if (match) {
+      isCorrect = true;
+      matchedWord = match.word;
       match.guessedRound1 = true;
       match.guessedBy = player.id;
       player.guessPoints += 2;
       const author = room.players.find(p => p.id === match.authorId);
       if (author) author.artistPoints += 2;
-
-      if (assigned.every(d => d.guessedRound1)) {
-        room.scoring1Done[player.id] = true;
-        checkScoring1Advance(room);
-      }
-
-      broadcastRoom(room);
-      return cb?.({ ok: true, correct: true, matchedWord: match.word, color: match.color });
-    } else {
-      return cb?.({ ok: true, correct: false });
     }
+
+    attempts.push({
+      guessText: rawText,
+      correct: isCorrect,
+      matchedWord
+    });
+
+    // Automatically finish Round 1 for this player if they used all 3 guesses OR guessed all 3 drawings
+    if (attempts.length >= 3 || assigned.every(d => d.guessedRound1)) {
+      room.scoring1Done[player.id] = true;
+      checkScoring1Advance(room);
+    }
+
+    broadcastRoom(room);
+    return cb?.({
+      ok: true,
+      correct: isCorrect,
+      matchedWord,
+      attemptsUsed: attempts.length,
+      attemptsLeft: Math.max(0, 3 - attempts.length)
+    });
   });
 
   socket.on('finish_scoring_1', (payload = {}) => {
@@ -476,13 +608,15 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
+  // Round 2 Scoring: Max 1 guess per remaining unguessed drawing (up to 3 total)
   socket.on('submit_scoring_2', (payload = {}, cb) => {
     const { room, player } = resolveContext(socket, payload);
     if (!room || room.state !== 'SCORING_2' || !player || room.scoring2Done[player.id]) return;
 
     const assigned = room.assignments[player.id] || [];
     const remaining = assigned.filter(d => !d.guessedRound1 && !d.guessedRound2);
-    const picks = (Array.isArray(payload.selectedWords) ? payload.selectedWords : []).slice(0, remaining.length);
+    const maxPicks = Math.min(3, remaining.length);
+    const picks = (Array.isArray(payload.selectedWords) ? payload.selectedWords : []).slice(0, maxPicks);
 
     let hits = 0;
     picks.forEach(pickedWord => {
@@ -516,6 +650,7 @@ io.on('connection', (socket) => {
     room.currentRound = 1;
     room.drawings = [];
     room.assignments = {};
+    room.scoring1Attempts = {};
     room.scoring1Done = {};
     room.scoring2Done = {};
     broadcastRoom(room);
@@ -526,7 +661,6 @@ io.on('connection', (socket) => {
     if (!code || !rooms.has(code)) return;
     const room = rooms.get(code);
     const player = room.players.find(p => p.id === socket.data.playerId);
-    // Only mark disconnected if this socket is still the active socket for that player
     if (player && player.socketId === socket.id) {
       player.connected = false;
       broadcastRoom(room);
@@ -558,15 +692,13 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
   const ips = getLocalIPs();
   console.log('\n==================================================');
-  console.log('🎨 QBISM HOTSPOT / WI-FI SERVER RUNNING!');
+  console.log('🎨 QBISM SERVER RUNNING!');
   console.log('==================================================');
   console.log(`👉 On this device:  http://localhost:${PORT}`);
   if (ips.length > 0) {
     ips.forEach(ip => {
       console.log(`📶 Friends on Wi-Fi/Hotspot open:  http://${ip.address}:${PORT}`);
     });
-  } else {
-    console.log(`📶 Turn on Wi-Fi Hotspot, then friends open: http://192.168.43.1:${PORT}`);
   }
   console.log('==================================================\n');
 });
