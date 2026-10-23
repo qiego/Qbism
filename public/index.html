@@ -8,14 +8,17 @@
 </head>
 <body>
   <div id="app">
-    <!-- Top Header -->
+    <!-- Compact Top Header -->
     <header class="app-header">
       <div class="logo">
         <span class="cube-r">Q</span><span class="cube-g">B</span><span class="cube-b">I</span>SM
       </div>
-      <div id="room-badge" class="room-badge hidden">
-        <span>CODE: <strong id="header-room-code">----</strong></span>
-        <button id="btn-leave-room" class="btn-leave" title="Leave Room">✕</button>
+      <div class="header-right">
+        <span id="mode-badges" class="mode-badges hidden"></span>
+        <div id="room-badge" class="room-badge hidden">
+          <span>CODE: <strong id="header-room-code">----</strong></span>
+          <button id="btn-leave-room" class="btn-leave" title="Leave Room">✕</button>
+        </div>
       </div>
     </header>
 
@@ -25,9 +28,9 @@
     <!-- SCREEN 1: HOME (Create / Join) -->
     <section id="screen-home" class="screen active">
       <div class="hero-card">
-        <h1>Draw Blind.<br/>Think <span class="accent-text">Cubist</span>.</h1>
+        <h1>Draw Blind. Think <span class="accent-text">Cubist</span>.</h1>
         <p class="subtitle">
-          Draw 3 secret words without seeing your strokes. Your blind sketches are rotated, colored red/green/blue, and layered into a Cubist masterpiece for others to decode!
+          Draw 3 words invisibly. Sketches are rotated, layered, and sent to other players to decode in 2 rounds!
         </p>
 
         <div class="form-group">
@@ -37,11 +40,29 @@
 
         <div class="home-actions">
           <div class="action-box">
-            <h3>New Session</h3>
-            <div class="lang-toggle">
-              <button type="button" class="lang-btn active" data-lang="en">🇬🇧 English</button>
-              <button type="button" class="lang-btn" data-lang="it">🇮🇹 Italiano</button>
+            <div class="options-grid">
+              <div>
+                <span class="tiny-label">Language</span>
+                <div class="lang-toggle">
+                  <button type="button" class="lang-btn active" data-lang="en">🇬🇧 EN</button>
+                  <button type="button" class="lang-btn" data-lang="it">🇮🇹 IT</button>
+                </div>
+              </div>
+              <div>
+                <span class="tiny-label">Words</span>
+                <div class="diff-toggle">
+                  <button type="button" class="diff-btn active" data-diff="normal">Classic</button>
+                  <button type="button" class="diff-btn" data-diff="advanced">Advanced</button>
+                  <button type="button" class="diff-btn" data-diff="mixed">Mix</button>
+                </div>
+              </div>
             </div>
+
+            <label class="hardcore-check">
+              <input type="checkbox" id="create-hardcore" />
+              <span>🔥 <strong>Hardcore Mode</strong> (Single color &amp; no single-drawing filter)</span>
+            </label>
+
             <button id="btn-create" class="btn btn-primary btn-block">Create Game Room</button>
           </div>
 
@@ -59,35 +80,58 @@
 
     <!-- SCREEN 2: LOBBY -->
     <section id="screen-lobby" class="screen">
-      <div class="card">
-        <div class="lobby-code-box">
-          <span class="small-label">ROOM CODE</span>
-          <div class="big-code" id="lobby-code">----</div>
-          <div id="hotspot-url-box" class="hotspot-box">
-            <span class="small-label">📶 FRIENDS ON HOTSPOT / WI-FI OPEN:</span>
-            <div id="hotspot-url-text" class="hotspot-url">http://...</div>
+      <div class="card lobby-card">
+        <div class="lobby-top-row">
+          <div class="lobby-code-box">
+            <span class="small-label">ROOM CODE</span>
+            <div class="big-code" id="lobby-code">----</div>
+            <div id="hotspot-url-box" class="hotspot-box">
+              <span class="small-label">📶 HOTSPOT URL:</span>
+              <div id="hotspot-url-text" class="hotspot-url">http://...</div>
+            </div>
+            <div class="share-buttons">
+              <button id="btn-whatsapp" class="btn btn-whatsapp btn-small">📲 WhatsApp</button>
+              <button id="btn-copy-link" class="btn btn-outline btn-small">🔗 Copy Link</button>
+            </div>
           </div>
-          <div class="share-buttons">
-            <button id="btn-whatsapp" class="btn btn-whatsapp">📲 Share on WhatsApp</button>
-            <button id="btn-copy-link" class="btn btn-outline">🔗 Copy Link</button>
+
+          <div class="lobby-right-col">
+            <!-- Host Game Options -->
+            <div id="lobby-options-control" class="lobby-options hidden">
+              <div class="opt-row">
+                <span class="tiny-label">Language:</span>
+                <div class="btn-group">
+                  <button type="button" class="lang-switch-btn" data-lang="en">🇬🇧 EN</button>
+                  <button type="button" class="lang-switch-btn" data-lang="it">🇮🇹 IT</button>
+                </div>
+              </div>
+              <div class="opt-row">
+                <span class="tiny-label">Word Pool:</span>
+                <div class="btn-group">
+                  <button type="button" class="diff-switch-btn" data-diff="normal">Classic</button>
+                  <button type="button" class="diff-switch-btn" data-diff="advanced">Advanced</button>
+                  <button type="button" class="diff-switch-btn" data-diff="mixed">Mix</button>
+                </div>
+              </div>
+              <label class="hardcore-check compact">
+                <input type="checkbox" id="lobby-hardcore-toggle" />
+                <span>🔥 <strong>Hardcore Mode</strong> (No colors / No layer filter)</span>
+              </label>
+            </div>
+
+            <div class="players-section">
+              <h3>Artists Joined (<span id="lobby-player-count">0</span>)</h3>
+              <ul id="lobby-player-list" class="player-chips"></ul>
+            </div>
           </div>
         </div>
 
-        <div id="lobby-lang-control" class="lobby-lang hidden">
-          <span>Word Language:</span>
-          <button type="button" class="lang-switch-btn" data-lang="en">🇬🇧 EN</button>
-          <button type="button" class="lang-switch-btn" data-lang="it">🇮🇹 IT</button>
+        <div class="lobby-footer">
+          <div id="host-start-area">
+            <button id="btn-start-game" class="btn btn-primary btn-block">Start Game (Min 2 Players)</button>
+          </div>
+          <p id="guest-wait-msg" class="wait-msg hidden">Waiting for the host to start the game...</p>
         </div>
-
-        <div class="players-section">
-          <h3>Artists in Lobby (<span id="lobby-player-count">0</span>)</h3>
-          <ul id="lobby-player-list" class="player-chips"></ul>
-        </div>
-
-        <div id="host-start-area">
-          <button id="btn-start-game" class="btn btn-primary btn-block">Start Game (Min 2 Players)</button>
-        </div>
-        <p id="guest-wait-msg" class="wait-msg hidden">Waiting for the host to start the game...</p>
       </div>
     </section>
 
@@ -95,37 +139,39 @@
     <section id="screen-drawing" class="screen">
       <div class="phase-bar">
         <div class="badge">ROUND <span id="draw-round-num">1</span> / 3</div>
+        <div class="timer-pill">⏱️ <strong id="draw-timer-text">0.0s</strong></div>
         <div class="penalty-pill">
-          ⚡ Finished so far: <strong id="finished-count-num">0</strong>
-          <span class="penalty-hint">(Current Penalty: -<span id="current-penalty-num">0</span> pt)</span>
+          Done: <strong id="finished-count-num">0</strong>
+          <span class="penalty-hint">(-<span id="current-penalty-num">0</span> pt)</span>
         </div>
       </div>
 
       <!-- Step 3A: Word Picker -->
-      <div id="word-picker-panel" class="card">
+      <div id="word-picker-panel" class="card center-panel">
         <h2>Pick 1 Word to Draw Blindly</h2>
-        <p class="hint">Choose from your remaining secret words for this round:</p>
+        <p class="hint">Select one of your remaining words for this round:</p>
         <div id="my-words-list" class="word-buttons"></div>
       </div>
 
-      <!-- Step 3B: Blind Square Frame -->
-      <div id="blind-canvas-panel" class="card hidden">
+      <!-- Step 3B: Blind Square Frame (Fits in 1 screen without scrolling) -->
+      <div id="blind-canvas-panel" class="card draw-stage hidden">
         <div class="drawing-header">
-          <div>Drawing: <strong id="active-drawing-word" class="highlight-word">---</strong></div>
-          <button id="btn-clear-canvas" class="btn btn-small btn-outline">Reset Canvas</button>
+          <div>Word: <strong id="active-drawing-word" class="highlight-word">---</strong> <span class="blind-tag">(Invisible Strokes)</span></div>
+          <button id="btn-clear-canvas" class="btn btn-small btn-outline">Reset</button>
         </div>
-        <p class="blind-warning">👁️‍🗨️ Strokes are INVISIBLE! Only the square frame is visible.</p>
 
-        <div class="canvas-wrapper" id="draw-canvas-wrapper">
-          <canvas id="draw-canvas" width="500" height="500"></canvas>
-          <div id="touch-dot" class="touch-dot hidden"></div>
+        <div class="canvas-stage-area">
+          <div class="canvas-wrapper" id="draw-canvas-wrapper">
+            <canvas id="draw-canvas" width="500" height="500"></canvas>
+            <div id="touch-dot" class="touch-dot hidden"></div>
+          </div>
         </div>
 
         <button id="btn-done-drawing" class="btn btn-primary btn-block">✅ Done Drawing!</button>
       </div>
 
       <!-- Step 3C: Waiting for other players to finish round -->
-      <div id="draw-wait-panel" class="card hidden">
+      <div id="draw-wait-panel" class="card center-panel hidden">
         <h2>Drawing Submitted!</h2>
         <p id="my-round-penalty-msg" class="penalty-result"></p>
         <p class="wait-msg">Waiting for other artists to finish Round <span id="wait-round-num">1</span>...</p>
@@ -133,25 +179,23 @@
       </div>
     </section>
 
-    <!-- SCREEN 4: SCORING ROUND 1 & 2 (Cubist Painting + On-Screen Keyboard / Word Pool) -->
+    <!-- SCREEN 4: SCORING ROUND 1 & 2 (Single-Screen Layout + Native Keyboard) -->
     <section id="screen-scoring" class="screen">
       <div class="phase-bar">
         <div class="badge" id="scoring-phase-badge">SCORING ROUND 1</div>
-        <div class="score-pill" id="scoring-points-info">+2 pts per guess (to you & artist)</div>
+        <div class="score-pill" id="scoring-points-info">+2 pts per right guess</div>
       </div>
 
       <div class="scoring-layout">
         <!-- Left/Top: Cubist Combined Canvas -->
         <div class="card cubist-card">
-          <h3>Your Assigned Cubist Painting</h3>
-          <p class="hint">3 drawings rotated (0°/90°/180°/270°) & colored Red, Green, Blue</p>
-
-          <div class="canvas-wrapper cubist-wrapper">
-            <canvas id="cubist-canvas" width="500" height="500"></canvas>
+          <div class="canvas-stage-area">
+            <div class="canvas-wrapper cubist-wrapper">
+              <canvas id="cubist-canvas" width="500" height="500"></canvas>
+            </div>
           </div>
 
-          <div class="layer-toggles">
-            <span class="small-label">Filter Layer:</span>
+          <div id="layer-toggles-bar" class="layer-toggles">
             <button class="layer-btn active" data-layer="all">All 3</button>
             <button class="layer-btn layer-r" data-layer="red">🔴 Red</button>
             <button class="layer-btn layer-g" data-layer="green">🟢 Green</button>
@@ -164,48 +208,74 @@
 
         <!-- Right/Bottom: Guessing Controls -->
         <div class="card guessing-card">
-          <!-- Round 1: No help + On-screen Keyboard -->
-          <div id="scoring-r1-panel">
-            <h3>Guess the 3 Words (No Help!)</h3>
-            <p class="hint">Type a word using the on-screen keyboard and press GUESS.</p>
-
-            <div class="typed-display" id="r1-typed-box">
-              <span id="r1-typed-text"></span><span class="cursor">|</span>
+          <!-- Round 1: Native keyboard input + Max 3 guesses -->
+          <div id="scoring-r1-panel" class="guess-panel-inner">
+            <div class="r1-header-row">
+              <h3>Guess the 3 Words</h3>
+              <span class="attempts-badge">Guesses Left: <strong id="r1-attempts-left">3</strong> / 3</span>
             </div>
+            <p class="hint">Max 3 guesses (1 per drawing). Use your keyboard below:</p>
 
-            <div id="onscreen-keyboard" class="keyboard"></div>
+            <form id="r1-guess-form" class="guess-input-row">
+              <input
+                type="text"
+                id="r1-guess-input"
+                placeholder="Type your guess..."
+                maxlength="28"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+              />
+              <button type="submit" class="btn btn-primary">Guess</button>
+            </form>
+
+            <div id="r1-attempts-log" class="attempts-log"></div>
 
             <div class="r1-actions">
-              <button id="btn-r1-finish" class="btn btn-outline btn-block">Done / Pass to Scoring Round 2 ➔</button>
+              <button id="btn-r1-finish" type="button" class="btn btn-outline btn-small btn-block">
+                Skip Remaining Guesses ➔ Round 2
+              </button>
             </div>
           </div>
 
-          <!-- Round 2: Word Bank Selection (5 * N words) -->
-          <div id="scoring-r2-panel" class="hidden">
-            <h3>Round 2: Pick from All Game Words</h3>
-            <p class="hint">
-              Select <strong id="r2-needed-count">0</strong> word(s) for the remaining unguessed drawings (+1 pt each):
-            </p>
+          <!-- Round 2: Word Bank Selection (Max 1 guess per remaining unguessed drawing) -->
+          <div id="scoring-r2-panel" class="guess-panel-inner hidden">
+            <div class="r1-header-row">
+              <h3>Round 2: Word Bank</h3>
+              <span class="attempts-badge">Pick <strong id="r2-needed-count">0</strong> word(s)</span>
+            </div>
+            <p class="hint">1 guess per remaining unguessed drawing (+1 pt each):</p>
             <div id="r2-word-pool" class="word-pool-grid"></div>
-            <button id="btn-r2-submit" class="btn btn-primary btn-block">Confirm Round 2 Guesses</button>
+            <button id="btn-r2-submit" type="button" class="btn btn-primary btn-block">Confirm Round 2 Guesses</button>
           </div>
 
           <!-- Waiting for others to finish scoring -->
-          <div id="scoring-wait-panel" class="hidden">
-            <h3>Choices Locked In!</h3>
-            <p class="wait-msg">Waiting for other players to complete this scoring round...</p>
+          <div id="scoring-wait-panel" class="guess-panel-inner hidden">
+            <h3>Guesses Locked In!</h3>
+            <p class="wait-msg">Waiting for other players to finish this scoring round...</p>
             <ul id="scoring-status-list" class="player-chips"></ul>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- SCREEN 5: GAME OVER (Leaderboard + Cubist Gallery) -->
+    <!-- SCREEN 5: GAME OVER (Single-Screen Tabbed Results: Scores, Who Drew What & Time, Cubist Gallery) -->
     <section id="screen-gameover" class="screen">
-      <div class="card">
-        <h1 class="winner-banner" id="winner-banner">🏆 Winner!</h1>
-        <p class="subtitle">Final Scores (Guessing + Artist Points − Speed Penalties)</p>
+      <div class="gameover-header">
+        <h2 class="winner-banner" id="winner-banner">🏆 Winner!</h2>
+        <div class="gameover-tabs">
+          <button type="button" class="tab-btn active" data-tab="scores">🏆 Leaderboard</button>
+          <button type="button" class="tab-btn" data-tab="drawings">⏱️ Who Drew What &amp; Time</button>
+          <button type="button" class="tab-btn" data-tab="gallery">🖼️ Cubist Gallery</button>
+        </div>
+        <div id="host-replay-area" class="hidden">
+          <button id="btn-play-again" class="btn btn-primary btn-small">🔄 Play Again</button>
+        </div>
+      </div>
 
+      <!-- Tab 1: Leaderboard -->
+      <div id="tab-scores" class="card gameover-tab-panel">
         <div class="table-wrap">
           <table class="score-table">
             <thead>
@@ -215,27 +285,42 @@
                 <th>Guessed</th>
                 <th>Drawn</th>
                 <th>Penalty</th>
+                <th>Draw Time</th>
                 <th>Total</th>
               </tr>
             </thead>
             <tbody id="leaderboard-body"></tbody>
           </table>
         </div>
+      </div>
 
-        <div id="host-replay-area" class="replay-area hidden">
-          <button id="btn-play-again" class="btn btn-primary btn-block">🔄 Play Another Session</button>
+      <!-- Tab 2: Detailed Breakdown of Who Drew What & Time Taken -->
+      <div id="tab-drawings" class="card gameover-tab-panel hidden">
+        <div class="table-wrap">
+          <table class="score-table">
+            <thead>
+              <tr>
+                <th>Rnd</th>
+                <th>Word</th>
+                <th>Drawn By</th>
+                <th>Time Taken</th>
+                <th>Speed Pen.</th>
+                <th>Assigned To</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody id="drawings-breakdown-body"></tbody>
+          </table>
         </div>
       </div>
 
-      <div class="card">
-        <h2>🖼️ Cubist Exhibition Gallery</h2>
-        <p class="hint">Every combined artwork and the 3 secret words inside it:</p>
+      <!-- Tab 3: Cubist Gallery -->
+      <div id="tab-gallery" class="card gameover-tab-panel hidden">
         <div id="gallery-grid" class="gallery-grid"></div>
       </div>
     </section>
   </div>
 
-  <!-- Supports BOTH Local Hotspot Server (Socket.IO) AND Dual-Mode P2P -->
   <script src="/socket.io/socket.io.js"></script>
   <script src="app.js"></script>
 </body>

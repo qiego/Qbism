@@ -14,19 +14,21 @@ localStorage.setItem('qbism_player_id', myPlayerId);
 sessionStorage.setItem('qbism_player_id', myPlayerId);
 
 let selectedCreateLang = 'en';
+let selectedCreateDiff = 'normal';
 let currentRoomState = null;
 let detectedHotspotUrl = window.location.origin;
 
-// Drawing state
+// Drawing state & timer
 let currentRoundTracked = 0;
 let activeWord = null;
 let strokes = [];
 let currentStroke = null;
 let isDrawing = false;
+let drawStartTimeMs = 0;
+let drawTimerInterval = null;
 
 // Scoring state
 let activeLayerFilter = 'all';
-let r1Typed = '';
 let r2SelectedWords = [];
 
 // DOM Elements
@@ -39,6 +41,7 @@ const screens = {
 };
 
 const roomBadge = document.getElementById('room-badge');
+const modeBadges = document.getElementById('mode-badges');
 const headerRoomCode = document.getElementById('header-room-code');
 const toastEl = document.getElementById('toast');
 
@@ -63,7 +66,26 @@ function getContextPayload(extra = {}) {
   };
 }
 
-// Auto-rejoin active room on page refresh or Socket.IO background reconnect (fixes Firefox for Android)
+function startDrawTimer() {
+  drawStartTimeMs = Date.now();
+  clearInterval(drawTimerInterval);
+  const timerEl = document.getElementById('draw-timer-text');
+  if (timerEl) timerEl.textContent = '0.0s';
+  drawTimerInterval = setInterval(() => {
+    if (!drawStartTimeMs) return;
+    const elapsed = ((Date.now() - drawStartTimeMs) / 1000).toFixed(1);
+    if (timerEl) timerEl.textContent = `${elapsed}s`;
+  }, 100);
+}
+
+function stopDrawTimer() {
+  clearInterval(drawTimerInterval);
+  drawTimerInterval = null;
+  if (!drawStartTimeMs) return 1.0;
+  return Number(Math.max(0.5, (Date.now() - drawStartTimeMs) / 1000).toFixed(1));
+}
+
+// Auto-rejoin active room on page refresh or Socket.IO background reconnect
 function attemptAutoRejoin() {
   const savedCode = localStorage.getItem('qbism_room_code');
   const savedName = localStorage.getItem('qbism_player_name') || 'Artist';
@@ -81,10 +103,10 @@ function attemptAutoRejoin() {
         }
         localStorage.setItem('qbism_room_code', res.code);
       } else {
-        // Room no longer exists on server -> clear saved code and stay on Home screen
         if (!currentRoomState) {
           localStorage.removeItem('qbism_room_code');
           roomBadge.classList.add('hidden');
+          modeBadges.classList.add('hidden');
           showScreen('home');
         }
       }
@@ -96,7 +118,6 @@ socket.on('connect', () => {
   attemptAutoRejoin();
 });
 
-// When Firefox for Android wakes up from background / screen lock, immediately resync
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     if (!socket.connected) {
@@ -107,7 +128,6 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// Fetch Local Hotspot / Wi-Fi IP only when hosting on localhost; on Cloud/HTTPS use window.location.origin
 async function fetchNetworkInfo() {
   const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   const hotspotBox = document.getElementById('hotspot-url-box');
@@ -145,9 +165,9 @@ window.addEventListener('DOMContentLoaded', () => {
     document.getElementById('player-name').value = savedName;
   }
   initBlindCanvas();
-  initOnscreenKeyboard();
+  initScoringControls();
+  initGameOverTabs();
 
-  // Leave Room button in top badge
   const leaveBtn = document.getElementById('btn-leave-room');
   if (leaveBtn) {
     leaveBtn.addEventListener('click', () => {
@@ -156,14 +176,16 @@ window.addEventListener('DOMContentLoaded', () => {
       currentRoundTracked = 0;
       activeWord = null;
       strokes = [];
+      stopDrawTimer();
       roomBadge.classList.add('hidden');
+      modeBadges.classList.add('hidden');
       showScreen('home');
       showToast('Left room');
     });
   }
 });
 
-// Language selection on Home screen
+// Home screen toggles
 document.querySelectorAll('.lang-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
@@ -172,18 +194,37 @@ document.querySelectorAll('.lang-btn').forEach(btn => {
   });
 });
 
-// Create Room
-document.getElementById('btn-create').addEventListener('click', () => {
-  const playerName = document.getElementById('player-name').value.trim() || 'Artist';
-  localStorage.setItem('qbism_player_name', playerName);
-  fetchNetworkInfo();
-  socket.emit('create_room', { playerName, language: selectedCreateLang, playerId: myPlayerId }, (res) => {
-    if (!res?.ok) return showToast(res?.error || 'Could not create room');
-    localStorage.setItem('qbism_room_code', res.code);
+document.querySelectorAll('.diff-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedCreateDiff = btn.dataset.diff;
   });
 });
 
-// Join Room (Note: on Hotspot, if only 1 room exists, even an empty code auto-joins!)
+// Create Room
+document.getElementById('btn-create').addEventListener('click', () => {
+  const playerName = document.getElementById('player-name').value.trim() || 'Artist';
+  const hardcore = document.getElementById('create-hardcore').checked;
+  localStorage.setItem('qbism_player_name', playerName);
+  fetchNetworkInfo();
+  socket.emit(
+    'create_room',
+    {
+      playerName,
+      language: selectedCreateLang,
+      difficulty: selectedCreateDiff,
+      hardcore,
+      playerId: myPlayerId
+    },
+    (res) => {
+      if (!res?.ok) return showToast(res?.error || 'Could not create room');
+      localStorage.setItem('qbism_room_code', res.code);
+    }
+  );
+});
+
+// Join Room
 document.getElementById('btn-join').addEventListener('click', () => {
   const playerName = document.getElementById('player-name').value.trim() || 'Artist';
   const code = document.getElementById('join-code-input').value.trim().toUpperCase();
@@ -199,14 +240,24 @@ document.getElementById('btn-join').addEventListener('click', () => {
   });
 });
 
-// Lobby language switch
+// Lobby option switches
 document.querySelectorAll('.lang-switch-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    socket.emit('set_language', getContextPayload({ language: btn.dataset.lang }));
+    socket.emit('set_options', getContextPayload({ language: btn.dataset.lang }));
   });
 });
 
-// WhatsApp & Invite Link Sharing (Works for both Cloud Hosting and Local Hotspot!)
+document.querySelectorAll('.diff-switch-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    socket.emit('set_options', getContextPayload({ difficulty: btn.dataset.diff }));
+  });
+});
+
+document.getElementById('lobby-hardcore-toggle').addEventListener('change', (e) => {
+  socket.emit('set_options', getContextPayload({ hardcore: e.target.checked }));
+});
+
+// WhatsApp & Invite Link Sharing
 document.getElementById('btn-whatsapp').addEventListener('click', () => {
   if (!currentRoomState) return;
   const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -307,13 +358,15 @@ function initBlindCanvas() {
     if (strokes.length === 0) {
       return showToast('Draw something inside the square frame first!');
     }
-    socket.emit('submit_drawing', getContextPayload({ word: activeWord, strokes }), (res) => {
+    const durationSec = stopDrawTimer();
+    socket.emit('submit_drawing', getContextPayload({ word: activeWord, strokes, durationSec }), (res) => {
       if (res?.ok) {
         const pen = res.penalty;
+        const timeStr = res.durationSec ? ` in ${res.durationSec}s` : '';
         document.getElementById('my-round-penalty-msg').textContent =
           pen === 0
-            ? '⚡ You finished 1st! 0 Penalty Points!'
-            : `⏱️ ${pen} player(s) finished before you (-${pen} penalty pt).`;
+            ? `⚡ Finished 1st${timeStr}! (0 Penalty Points)`
+            : `⏱️ Finished${timeStr} — ${pen} player(s) finished before you (-${pen} pt).`;
       } else if (res?.error) {
         showToast(res.error);
       }
@@ -322,15 +375,16 @@ function initBlindCanvas() {
 }
 
 // ==========================================
-// CUBIST RENDERER (Rotation + RGB Coloring)
+// CUBIST RENDERER (Rotation + RGB or Hardcore Monochrome)
 // ==========================================
 const COLOR_HEX = {
   red: '#ff2a55',
   green: '#00c853',
-  blue: '#2962ff'
+  blue: '#2962ff',
+  mono: '#1b1f32'
 };
 
-function renderCubistCanvas(canvas, drawings, filterColor = 'all') {
+function renderCubistCanvas(canvas, drawings, filterColor = 'all', forceHardcore = false) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width;
   const H = canvas.height;
@@ -351,14 +405,15 @@ function renderCubistCanvas(canvas, drawings, filterColor = 'all') {
   ctx.globalCompositeOperation = 'multiply';
 
   drawings.forEach(d => {
-    if (filterColor !== 'all' && d.color !== filterColor) return;
+    if (!forceHardcore && filterColor !== 'all' && d.color !== filterColor) return;
 
     ctx.save();
     ctx.translate(W / 2, H / 2);
     ctx.rotate(((d.rotation || 0) * Math.PI) / 180);
     ctx.translate(-W / 2, -H / 2);
 
-    ctx.strokeStyle = COLOR_HEX[d.color] || '#ff2a55';
+    const strokeColorKey = forceHardcore ? 'mono' : d.color;
+    ctx.strokeStyle = COLOR_HEX[strokeColorKey] || '#1b1f32';
     ctx.lineWidth = 6;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -386,6 +441,7 @@ function renderCubistCanvas(canvas, drawings, filterColor = 'all') {
 
 document.querySelectorAll('.layer-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    if (currentRoomState?.hardcore) return;
     document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     activeLayerFilter = btn.dataset.layer;
@@ -393,53 +449,35 @@ document.querySelectorAll('.layer-btn').forEach(btn => {
       renderCubistCanvas(
         document.getElementById('cubist-canvas'),
         currentRoomState.myAssignedPainting,
-        activeLayerFilter
+        activeLayerFilter,
+        currentRoomState.hardcore
       );
     }
   });
 });
 
 // ==========================================
-// ON-SCREEN KEYBOARD FOR SCORING ROUND 1
+// SCORING CONTROLS (Native Input + Max 3 Guesses)
 // ==========================================
-function initOnscreenKeyboard() {
-  const kbContainer = document.getElementById('onscreen-keyboard');
-  const rows = [
-    ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
-    ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
-    ['⌫', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', 'GUESS']
-  ];
+function initScoringControls() {
+  const form = document.getElementById('r1-guess-form');
+  const input = document.getElementById('r1-guess-input');
 
-  rows.forEach(row => {
-    const rowEl = document.createElement('div');
-    rowEl.className = 'kb-row';
-    row.forEach(key => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'kb-key';
-      if (key === '⌫') btn.classList.add('kb-wide');
-      if (key === 'GUESS') btn.classList.add('kb-enter');
-      btn.textContent = key;
-      btn.addEventListener('click', () => handleVirtualKey(key));
-      rowEl.appendChild(btn);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const guessText = input.value.trim();
+    if (!guessText) return;
+    input.value = '';
+
+    socket.emit('submit_guess_r1', getContextPayload({ guessText }), (res) => {
+      if (res?.correct) {
+        showToast(`🎉 Correct! "${res.matchedWord.toUpperCase()}" (+2 pts!)`);
+      } else if (res?.error) {
+        showToast(res.error);
+      } else {
+        showToast(`❌ "${guessText}" is not right (${res?.attemptsLeft ?? 0} guess left)`);
+      }
     });
-    kbContainer.appendChild(rowEl);
-  });
-
-  window.addEventListener('keydown', (e) => {
-    if (!currentRoomState || currentRoomState.state !== 'SCORING_1') return;
-    const me = currentRoomState.players.find(p => p.id === myPlayerId);
-    if (me?.hasFinishedScoring1) return;
-
-    if (e.key === 'Backspace') {
-      e.preventDefault();
-      handleVirtualKey('⌫');
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      handleVirtualKey('GUESS');
-    } else if (/^[a-zA-Z]$/.test(e.key)) {
-      handleVirtualKey(e.key.toUpperCase());
-    }
   });
 
   document.getElementById('btn-r1-finish').addEventListener('click', () => {
@@ -455,30 +493,17 @@ function initOnscreenKeyboard() {
   });
 }
 
-function handleVirtualKey(key) {
-  if (key === '⌫') {
-    r1Typed = r1Typed.slice(0, -1);
-    document.getElementById('r1-typed-text').textContent = r1Typed;
-  } else if (key === 'GUESS') {
-    if (!r1Typed.trim()) return;
-    const guessText = r1Typed;
-    r1Typed = '';
-    document.getElementById('r1-typed-text').textContent = '';
-    socket.emit('submit_guess_r1', getContextPayload({ guessText }), (res) => {
-      if (res?.correct) {
-        showToast(`🎉 Correct! "${res.matchedWord.toUpperCase()}" (+2 pts to you & artist!)`);
-      } else if (res?.error) {
-        showToast(res.error);
-      } else {
-        showToast(`❌ "${guessText}" is not one of the unguessed words. Try again!`);
-      }
+function initGameOverTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.tab;
+      document.getElementById('tab-scores').classList.toggle('hidden', tab !== 'scores');
+      document.getElementById('tab-drawings').classList.toggle('hidden', tab !== 'drawings');
+      document.getElementById('tab-gallery').classList.toggle('hidden', tab !== 'gallery');
     });
-  } else {
-    if (r1Typed.length < 18) {
-      r1Typed += key;
-      document.getElementById('r1-typed-text').textContent = r1Typed;
-    }
-  }
+  });
 }
 
 // ==========================================
@@ -500,21 +525,31 @@ socket.on('room_state', (state) => {
   roomBadge.classList.remove('hidden');
   headerRoomCode.textContent = state.code;
 
+  // Render Mode Badges in top header
+  modeBadges.classList.remove('hidden');
+  const diffLabel = state.difficulty === 'advanced' ? 'ADV' : state.difficulty === 'mixed' ? 'MIX' : 'CLASSIC';
+  modeBadges.innerHTML = `
+    <span class="mode-tag">${state.language.toUpperCase()} · ${diffLabel}</span>
+    ${state.hardcore ? '<span class="mode-tag hardcore">🔥 HARDCORE</span>' : ''}
+  `;
+
   if (state.state === 'LOBBY') {
     currentRoundTracked = 0;
     activeWord = null;
     strokes = [];
+    stopDrawTimer();
     showScreen('lobby');
     renderLobby(state);
   } else if (state.state === 'DRAWING') {
     showScreen('drawing');
     renderDrawingPhase(state);
   } else if (state.state === 'SCORING_1' || state.state === 'SCORING_2') {
+    stopDrawTimer();
     if (prevState !== state.state) {
       activeLayerFilter = 'all';
-      r1Typed = '';
       r2SelectedWords = [];
-      document.getElementById('r1-typed-text').textContent = '';
+      const r1Input = document.getElementById('r1-guess-input');
+      if (r1Input) r1Input.value = '';
       document.querySelectorAll('.layer-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.layer === 'all');
       });
@@ -522,6 +557,7 @@ socket.on('room_state', (state) => {
     showScreen('scoring');
     renderScoringPhase(state);
   } else if (state.state === 'GAME_OVER') {
+    stopDrawTimer();
     showScreen('gameover');
     renderGameOver(state);
   }
@@ -545,11 +581,15 @@ function renderLobby(state) {
   document.getElementById('host-start-area').classList.toggle('hidden', !isHost);
   document.getElementById('guest-wait-msg').classList.toggle('hidden', !!isHost);
 
-  const langCtrl = document.getElementById('lobby-lang-control');
-  langCtrl.classList.toggle('hidden', !isHost);
+  const optsCtrl = document.getElementById('lobby-options-control');
+  optsCtrl.classList.toggle('hidden', !isHost);
   document.querySelectorAll('.lang-switch-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.lang === state.language);
   });
+  document.querySelectorAll('.diff-switch-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.diff === (state.difficulty || 'normal'));
+  });
+  document.getElementById('lobby-hardcore-toggle').checked = !!state.hardcore;
 }
 
 function renderDrawingPhase(state) {
@@ -558,6 +598,7 @@ function renderDrawingPhase(state) {
     activeWord = state.me?.selectedWord || null;
     strokes = [];
     currentStroke = null;
+    startDrawTimer();
   } else if (!activeWord && state.me?.selectedWord) {
     activeWord = state.me.selectedWord;
   }
@@ -610,6 +651,7 @@ function renderDrawingPhase(state) {
       btn.addEventListener('click', () => {
         activeWord = w;
         strokes = [];
+        startDrawTimer();
         socket.emit('select_word', getContextPayload({ word: w }));
         renderDrawingPhase(currentRoomState);
       });
@@ -625,24 +667,38 @@ function renderDrawingPhase(state) {
 function renderScoringPhase(state) {
   const isR1 = state.state === 'SCORING_1';
   document.getElementById('scoring-phase-badge').textContent = isR1
-    ? 'SCORING ROUND 1 (NO HELP)'
+    ? 'SCORING ROUND 1 (MAX 3 GUESSES)'
     : 'SCORING ROUND 2 (WORD BANK)';
   document.getElementById('scoring-points-info').textContent = isR1
-    ? '+2 pts per right guess (to you & artist)'
-    : '+1 pt per right guess (to you & artist)';
+    ? '+2 pts per right guess'
+    : '+1 pt per right guess';
+
+  // Hide single-drawing layer filter in Hardcore mode!
+  const layerBar = document.getElementById('layer-toggles-bar');
+  layerBar.classList.toggle('hidden', !!state.hardcore);
 
   const painting = state.myAssignedPainting || [];
-  renderCubistCanvas(document.getElementById('cubist-canvas'), painting, activeLayerFilter);
+  renderCubistCanvas(
+    document.getElementById('cubist-canvas'),
+    painting,
+    state.hardcore ? 'all' : activeLayerFilter,
+    !!state.hardcore
+  );
 
   const slotsContainer = document.getElementById('cubist-slots');
   slotsContainer.innerHTML = '';
-  painting.forEach(d => {
+  painting.forEach((d, idx) => {
     const div = document.createElement('div');
     const isGuessed = d.guessedRound1 || d.guessedRound2;
-    div.className = `slot-pill ${d.color} ${isGuessed ? 'guessed' : ''}`;
-    div.textContent = isGuessed
-      ? `✓ ${d.word} (${d.rotation}°)`
-      : `${d.color.toUpperCase()} (${d.rotation}°) — ?`;
+    const pillColor = state.hardcore ? 'mono' : d.color;
+    div.className = `slot-pill ${pillColor} ${isGuessed ? 'guessed' : ''}`;
+    if (isGuessed) {
+      div.textContent = `✓ ${d.word} (${d.rotation}°)`;
+    } else if (state.hardcore) {
+      div.textContent = `DRAWING #${idx + 1} (${d.rotation}°) — ?`;
+    } else {
+      div.textContent = `${d.color.toUpperCase()} (${d.rotation}°) — ?`;
+    }
     slotsContainer.appendChild(div);
   });
 
@@ -675,11 +731,23 @@ function renderScoringPhase(state) {
   if (isR1) {
     r1Panel.classList.remove('hidden');
     r2Panel.classList.add('hidden');
+
+    const attemptsLeft = state.me?.r1AttemptsLeft ?? 3;
+    document.getElementById('r1-attempts-left').textContent = attemptsLeft;
+
+    const logEl = document.getElementById('r1-attempts-log');
+    logEl.innerHTML = '';
+    (state.me?.r1Attempts || []).forEach((att, idx) => {
+      const span = document.createElement('span');
+      span.className = `attempt-chip ${att.correct ? 'ok' : 'miss'}`;
+      span.textContent = `${idx + 1}. ${att.guessText} ${att.correct ? '✓' : '✕'}`;
+      logEl.appendChild(span);
+    });
   } else {
     r1Panel.classList.add('hidden');
     r2Panel.classList.remove('hidden');
 
-    const unguessedCount = painting.filter(d => !d.guessedRound1 && !d.guessedRound2).length;
+    const unguessedCount = Math.min(3, painting.filter(d => !d.guessedRound1 && !d.guessedRound2).length);
     document.getElementById('r2-needed-count').textContent = unguessedCount;
 
     const poolGrid = document.getElementById('r2-word-pool');
@@ -720,6 +788,7 @@ function renderGameOver(state) {
       ? `🏆 Tie! ${winners.join(' & ')} Win!`
       : `🏆 ${winners[0]} Wins Qbism!`;
 
+  // Tab 1: Leaderboard with Total Draw Time
   const tbody = document.getElementById('leaderboard-body');
   tbody.innerHTML = '';
   sorted.forEach((p, idx) => {
@@ -727,17 +796,44 @@ function renderGameOver(state) {
     tr.innerHTML = `
       <td><strong>#${idx + 1}</strong></td>
       <td>${p.name}${p.id === myPlayerId ? ' <em>(You)</em>' : ''}</td>
-      <td>+${p.guessPoints}</td>
-      <td>+${p.artistPoints}</td>
+      <td style="color: var(--green)">+${p.guessPoints}</td>
+      <td style="color: var(--blue)">+${p.artistPoints}</td>
       <td style="color: var(--red)">-${p.totalPenalty}</td>
-      <td><strong style="color: var(--accent); font-size: 1.15rem">${p.totalScore}</strong></td>
+      <td>⏱️ ${p.totalDrawTimeSec ?? 0}s</td>
+      <td><strong style="color: var(--accent); font-size: 1.05rem">${p.totalScore}</strong></td>
     `;
     tbody.appendChild(tr);
+  });
+
+  // Tab 2: Detailed Breakdown of Who Drew What & How Much Time They Took
+  const breakdownBody = document.getElementById('drawings-breakdown-body');
+  breakdownBody.innerHTML = '';
+  const allDrawings = [...(state.allDrawingsSummary || [])].sort(
+    (a, b) => a.round - b.round || (a.penalty || 0) - (b.penalty || 0)
+  );
+  allDrawings.forEach(d => {
+    const status = d.guessedRound1
+      ? '<span style="color: var(--green)">✅ R1 (+2)</span>'
+      : d.guessedRound2
+      ? '<span style="color: var(--accent)">☑️ R2 (+1)</span>'
+      : '<span style="color: var(--red)">❌ Missed</span>';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>R${d.round}</strong></td>
+      <td><strong style="color: ${COLOR_HEX[d.color] || 'var(--text)'}; text-transform: uppercase">${d.word}</strong></td>
+      <td>🎨 ${d.authorName}</td>
+      <td>⏱️ <strong>${d.durationSec ?? '-'}s</strong></td>
+      <td style="color: var(--red)">-${d.penalty ?? 0}</td>
+      <td>👉 ${d.assignedToName} (${d.rotation}°)</td>
+      <td>${status}</td>
+    `;
+    breakdownBody.appendChild(tr);
   });
 
   const isHost = state.players.find(p => p.id === myPlayerId)?.isHost;
   document.getElementById('host-replay-area').classList.toggle('hidden', !isHost);
 
+  // Tab 3: Cubist Gallery
   const galleryGrid = document.getElementById('gallery-grid');
   galleryGrid.innerHTML = '';
   (state.gallery || []).forEach(item => {
@@ -745,14 +841,14 @@ function renderGameOver(state) {
     card.className = 'gallery-item';
 
     const title = document.createElement('h4');
-    title.textContent = `Decoded by ${item.playerName}`;
+    title.textContent = `Assigned to ${item.playerName}`;
     card.appendChild(title);
 
     const canvas = document.createElement('canvas');
     canvas.width = 400;
     canvas.height = 400;
     card.appendChild(canvas);
-    renderCubistCanvas(canvas, item.drawings, 'all');
+    renderCubistCanvas(canvas, item.drawings, 'all', false);
 
     const ul = document.createElement('ul');
     ul.className = 'gallery-legend';
@@ -760,7 +856,7 @@ function renderGameOver(state) {
       const li = document.createElement('li');
       const status = d.guessedRound1 ? '✅ R1 (+2)' : d.guessedRound2 ? '☑️ R2 (+1)' : '❌ Missed';
       li.style.color = COLOR_HEX[d.color];
-      li.innerHTML = `<strong>${d.word.toUpperCase()}</strong> (${d.rotation}°) — drawn by <em>${d.authorName}</em> [${status}]`;
+      li.innerHTML = `<strong>${d.word.toUpperCase()}</strong> (${d.rotation}°) — by <em>${d.authorName}</em> in <strong>${d.durationSec ?? '-'}s</strong> [${status}]`;
       ul.appendChild(li);
     });
     card.appendChild(ul);
